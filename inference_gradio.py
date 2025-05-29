@@ -16,6 +16,8 @@ import torchaudio
 import whisper
 import gradio as gr
 from argparse import Namespace
+import urllib.request
+import sys
 
 # ---------------------------------------------------------------------
 # The following imports assume your local project structure:
@@ -87,105 +89,139 @@ def run_inference(
     """
     Inference script for VoiceStar TTS.
     """
-    # 1. Set seed
-    seed_everything(seed)
+    try:
+        print(f"[DEBUG] Starting run_inference with reference_speech: {reference_speech}")
+        
+        # Validate reference speech file exists
+        if not reference_speech or not os.path.exists(reference_speech):
+            raise ValueError(f"Reference speech file not found: {reference_speech}")
+        print(f"[DEBUG] Reference speech file exists: {reference_speech}")
+        
+        # 1. Set seed
+        seed_everything(seed)
+        print(f"[DEBUG] Seed set to {seed}")
 
-    # 2. Load model checkpoint
-    torch.serialization.add_safe_globals([Namespace])
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    ckpt_fn = os.path.join(model_root, model_name + ".pth")
-    if not os.path.exists(ckpt_fn):
-        # use wget to download
-        print(f"[Info] Downloading {model_name} checkpoint...")
-        os.system(f"wget https://huggingface.co/pyp1/VoiceStar/resolve/main/{model_name}.pth?download=true -O {ckpt_fn}")
-    bundle = torch.load(ckpt_fn, map_location=device, weights_only=True)
-    args = bundle["args"]
-    phn2num = bundle["phn2num"]
+        # 2. Load model checkpoint
+        torch.serialization.add_safe_globals([Namespace])
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        print(f"[DEBUG] Using device: {device}")
+        
+        ckpt_fn = os.path.join(model_root, model_name + ".pth")
+        print(f"[DEBUG] Looking for checkpoint at: {ckpt_fn}")
+        
+        if not os.path.exists(ckpt_fn):
+            # Download using urllib (cross-platform)
+            print(f"[Info] Downloading {model_name} checkpoint...")
+            os.makedirs(model_root, exist_ok=True)
+            url = f"https://huggingface.co/pyp1/VoiceStar/resolve/main/{model_name}.pth?download=true"
+            try:
+                urllib.request.urlretrieve(url, ckpt_fn)
+                print(f"[Info] Successfully downloaded to {ckpt_fn}")
+            except Exception as e:
+                print(f"[ERROR] Failed to download model: {str(e)}")
+                raise
+        bundle = torch.load(ckpt_fn, map_location=device, weights_only=True)
+        args = bundle["args"]
+        phn2num = bundle["phn2num"]
+        print(f"[DEBUG] Model checkpoint loaded successfully")
 
-    model = voice_star.VoiceStar(args)
-    model.load_state_dict(bundle["model"])
-    model.to(device)
-    model.eval()
+        model = voice_star.VoiceStar(args)
+        model.load_state_dict(bundle["model"])
+        model.to(device)
+        model.eval()
+        print(f"[DEBUG] Model initialized and moved to {device}")
 
-    # 3. If reference_text not provided, transcribe reference speech with Whisper
-    if reference_text is None:
-        print("[Info] No reference_text provided. Transcribing reference_speech with Whisper (large-v3-turbo).")
-        wh_model = whisper.load_model("large-v3-turbo")
-        result = wh_model.transcribe(reference_speech)
-        prefix_transcript = result["text"]
-        print(f"[Info] Whisper transcribed text: {prefix_transcript}")
-    else:
-        prefix_transcript = reference_text
+        # 3. If reference_text not provided, transcribe reference speech with Whisper
+        if reference_text is None:
+            print("[Info] No reference_text provided. Transcribing reference_speech with Whisper (large-v3-turbo).")
+            wh_model = whisper.load_model("large-v3-turbo")
+            result = wh_model.transcribe(reference_speech)
+            prefix_transcript = result["text"]
+            print(f"[Info] Whisper transcribed text: {prefix_transcript}")
+        else:
+            prefix_transcript = reference_text
+            print(f"[DEBUG] Using provided reference_text: {prefix_transcript}")
 
-    # 4. If target_duration not provided, estimate from reference speech + target_text
-    if target_duration is None:
-        target_generation_length = estimate_duration(reference_speech, target_text)
-        print(f"[Info] target_duration not provided, estimated as {target_generation_length:.2f}s. Provide --target_duration if needed.")
-    else:
-        target_generation_length = float(target_duration)
+        # 4. If target_duration not provided, estimate from reference speech + target_text
+        if target_duration is None:
+            target_generation_length = estimate_duration(reference_speech, target_text)
+            print(f"[Info] target_duration not provided, estimated as {target_generation_length:.2f}s. Provide --target_duration if needed.")
+        else:
+            target_generation_length = float(target_duration)
+            print(f"[DEBUG] Using provided target_duration: {target_generation_length}s")
 
-    # 5. Prepare signature from snippet
-    if args.n_codebooks == 4:
-        signature = "./pretrained/encodec_6f79c6a8.th"
-    elif args.n_codebooks == 8:
-        signature = "./pretrained/encodec_8cb1024_giga.th"
-    else:
-        signature = "./pretrained/encodec_6f79c6a8.th"
+        # 5. Prepare signature from snippet
+        if args.n_codebooks == 4:
+            signature = "./pretrained/encodec_6f79c6a8.th"
+        elif args.n_codebooks == 8:
+            signature = "./pretrained/encodec_8cb1024_giga.th"
+        else:
+            signature = "./pretrained/encodec_6f79c6a8.th"
+        print(f"[DEBUG] Using signature: {signature}")
 
-    if silence_tokens is None:
-        silence_tokens = []
+        if silence_tokens is None:
+            silence_tokens = []
 
-    if multi_trial is None:
-        multi_trial = []
+        if multi_trial is None:
+            multi_trial = []
 
-    delay_pattern_increment = args.n_codebooks + 1  # from snippet
+        delay_pattern_increment = args.n_codebooks + 1  # from snippet
 
-    info = torchaudio.info(reference_speech)
-    prompt_end_frame = int(cut_off_sec * info.sample_rate)
+        info = torchaudio.info(reference_speech)
+        prompt_end_frame = int(cut_off_sec * info.sample_rate)
+        print(f"[DEBUG] Audio info loaded, prompt_end_frame: {prompt_end_frame}")
 
-    # 6. Tokenizers
-    audio_tokenizer = AudioTokenizer(signature=signature)
-    text_tokenizer = TextTokenizer(backend="espeak")
+        # 6. Tokenizers
+        audio_tokenizer = AudioTokenizer(signature=signature)
+        text_tokenizer = TextTokenizer(backend="espeak")
+        print(f"[DEBUG] Tokenizers initialized")
 
-    # 7. decode_config
-    decode_config = {
-        "top_k": top_k,
-        "top_p": top_p,
-        "min_p": min_p,
-        "temperature": temperature,
-        "stop_repetition": stop_repetition,
-        "kvcache": kvcache,
-        "codec_audio_sr": codec_audio_sr,
-        "codec_sr": codec_sr,
-        "silence_tokens": silence_tokens,
-        "sample_batch_size": sample_batch_size,
-    }
+        # 7. decode_config
+        decode_config = {
+            "top_k": top_k,
+            "top_p": top_p,
+            "min_p": min_p,
+            "temperature": temperature,
+            "stop_repetition": stop_repetition,
+            "kvcache": kvcache,
+            "codec_audio_sr": codec_audio_sr,
+            "codec_sr": codec_sr,
+            "silence_tokens": silence_tokens,
+            "sample_batch_size": sample_batch_size,
+        }
+        print(f"[DEBUG] Decode config prepared")
 
-    # 8. Run inference
-    print("[Info] Running TTS inference...")
-    concated_audio, gen_audio = inference_one_sample(
-        model, args, phn2num, text_tokenizer, audio_tokenizer,
-        reference_speech, target_text,
-        device, decode_config,
-        prompt_end_frame=prompt_end_frame,
-        target_generation_length=target_generation_length,
-        delay_pattern_increment=delay_pattern_increment,
-        prefix_transcript=prefix_transcript,
-        multi_trial=multi_trial,
-        repeat_prompt=repeat_prompt,
-    )
+        # 8. Run inference
+        print("[Info] Running TTS inference...")
+        concated_audio, gen_audio = inference_one_sample(
+            model, args, phn2num, text_tokenizer, audio_tokenizer,
+            reference_speech, target_text,
+            device, decode_config,
+            prompt_end_frame=prompt_end_frame,
+            target_generation_length=target_generation_length,
+            delay_pattern_increment=delay_pattern_increment,
+            prefix_transcript=prefix_transcript,
+            multi_trial=multi_trial,
+            repeat_prompt=repeat_prompt,
+        )
+        print(f"[DEBUG] Inference completed successfully")
 
-    # The model returns a list of waveforms, pick the first
-    concated_audio, gen_audio = concated_audio[0].cpu(), gen_audio[0].cpu()
+        # The model returns a list of waveforms, pick the first
+        concated_audio, gen_audio = concated_audio[0].cpu(), gen_audio[0].cpu()
 
-    # 9. Save generated audio
-    os.makedirs(output_dir, exist_ok=True)
-    out_filename = "generated.wav"
-    out_path = os.path.join(output_dir, out_filename)
-    torchaudio.save(out_path, gen_audio, codec_audio_sr)
+        # 9. Save generated audio
+        os.makedirs(output_dir, exist_ok=True)
+        out_filename = "generated.wav"
+        out_path = os.path.join(output_dir, out_filename)
+        torchaudio.save(out_path, gen_audio, codec_audio_sr)
 
-    print(f"[Success] Generated audio saved to {out_path}")
-    return out_path  # Return the path for Gradio to load
+        print(f"[Success] Generated audio saved to {out_path}")
+        return out_path  # Return the path for Gradio to load
+    except Exception as e:
+        print(f"[ERROR] Exception in run_inference: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return None
 
 
 ############################
@@ -245,7 +281,7 @@ def main():
 
         model_root_box = gr.Textbox(
             label="Model Root Directory",
-            value="/data1/scratch/pyp/BoostedVoiceEditor/runs"
+            value="./pretrained"
         )
 
         reference_duration_box = gr.Textbox(
@@ -287,25 +323,39 @@ def main():
             seed,
             output_dir
         ):
-            # Convert any empty strings to None for optional fields
-            dur = float(target_duration) if target_duration else None
+            try:
+                print(f"[DEBUG] Starting inference with inputs:")
+                print(f"  reference_speech: {reference_speech}")
+                print(f"  reference_text: {reference_text}")
+                print(f"  target_text: {target_text}")
+                print(f"  model_name: {model_name}")
+                print(f"  model_root: {model_root}")
+                
+                # Convert any empty strings to None for optional fields
+                dur = float(target_duration) if target_duration else None
 
-            out_path = run_inference(
-                reference_speech=reference_speech,
-                reference_text=reference_text if reference_text else None,
-                target_text=target_text,
-                model_name=model_name,
-                model_root=model_root,
-                target_duration=dur,
-                top_k=int(top_k),
-                temperature=float(temperature),
-                kvcache=int(kvcache),
-                repeat_prompt=int(repeat_prompt),
-                stop_repetition=int(stop_repetition),
-                seed=int(seed),
-                output_dir=output_dir
-            )
-            return out_path
+                out_path = run_inference(
+                    reference_speech=reference_speech,
+                    reference_text=reference_text if reference_text else None,
+                    target_text=target_text,
+                    model_name=model_name,
+                    model_root=model_root,
+                    target_duration=dur,
+                    top_k=int(top_k),
+                    temperature=float(temperature),
+                    kvcache=int(kvcache),
+                    repeat_prompt=int(repeat_prompt),
+                    stop_repetition=int(stop_repetition),
+                    seed=int(seed),
+                    output_dir=output_dir
+                )
+                print(f"[DEBUG] Successfully generated audio at: {out_path}")
+                return out_path
+            except Exception as e:
+                print(f"[ERROR] Exception in gradio_inference: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                return None
 
         # 3) Link the "Generate TTS" button
         generate_button.click(
