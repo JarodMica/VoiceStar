@@ -1,36 +1,36 @@
 # VoiceStar: Robust, Duration-controllable TTS that can Extrapolate
 
-## TODO
-- [x] Gradio demo ETA: 6 April 2025
-- [ ] Research Paper: 7 April 2025 - 14 April 2025
-
 ## 1. Env setup
-### Download model
+### Download models
+#### Linux
 ```bash
 # under VoiceStar root dir
 wget -O ./pretrained/encodec_6f79c6a8.th https://huggingface.co/pyp1/Encodec_VoiceStar/resolve/main/encodec_4cb2048_giga.th?download=true
 wget -O ./pretrained/VoiceStar_840M_30s.pth https://huggingface.co/pyp1/VoiceStar/resolve/main/VoiceStar_840M_30s.pth?download=true
 wget -O ./pretrained/VoiceStar_840M_40s.pth https://huggingface.co/pyp1/VoiceStar/resolve/main/VoiceStar_840M_40s.pth?download=true
 ```
-### Inference only:
+
+#### Windows
 ```bash
-conda create -n voicestar python=3.10
-conda activate voicestar # this seems to lead to much worse results in terms of wer and spksim (comparing e9_rerun and e9_rerun_newba_upgraded)
-pip install torch==2.5.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu124 
-pip install numpy, tqdm, fire
-pip install phonemizer==3.2.1
-apt-get install espeak-ng # backend for the phonemizer
-pip install torchmetrics
-pip install einops
-pip install omegaconf==2.3.0
-pip install openai-whisper
-pip install gradio
+# under VoiceStar root dir
+curl -O ./pretrained/encodec_6f79c6a8.th https://huggingface.co/pyp1/Encodec_VoiceStar/resolve/main/encodec_4cb2048_giga.th?download=true
+curl -O ./pretrained/VoiceStar_840M_30s.pth https://huggingface.co/pyp1/VoiceStar/resolve/main/VoiceStar_840M_30s.pth?download=true
+curl -O ./pretrained/VoiceStar_840M_40s.pth https://huggingface.co/pyp1/VoiceStar/resolve/main/VoiceStar_840M_40s.pth?download=true
+```
+Or manually download encodec here: https://huggingface.co/pyp1/Encodec_VoiceStar/blob/main/encodec_4cb2048_giga.th and VoiceStar weights here https://huggingface.co/pyp1/VoiceStar/tree/main.  Place them into the `pretrained` folder
+
+### Env Setup:
+Highly recommend you use `uv` to set this repository up. It handles package dependencies etc all for you. You do need python on your computer first for pip but afterwards you can use uv
+```bash
+# The following is needed so torch index doesn't mess things up: --index-strategy unsafe-best-match 
+pip install uv
+uv sync --index-strategy unsafe-best-match
 ```
 
 * avoid warnings likes
 [WARNING] words_mismatch.py:88 || words count mismatch on 200.0% of the lines (2/1)
 ```python
-# go to ~/miniconda3/envs/voicestar/lib/python3.10/site-packages/phonemizer/backend/espeak/words_mismatch.py
+# go to .venv/Lib/site-packages/phonemizer/backend/espeak/words_mismatch.py
 # pass the warning like this
     def _resume(self, nmismatch: int, nlines: int):
         """Logs a high level undetailed warning"""
@@ -41,39 +41,25 @@ pip install gradio
         #         round(nmismatch / nlines, 2) * 100, nmismatch, nlines)
 ```
 
-### Training and data processing
-*additional packages*:
-```bash
-pip install huggingface_hub
-pip install datasets
-pip install tensorboard
-pip install wandb
-pip install matplotlib
-pip install ffmpeg-python
-pip install scipy
-pip install soundfile
-```
-
-## 2. example 
+## 2. Inference
 ### command line example
 check signature of `run_inference` func in `inference_commandline.py` for adjustable hyperparameters
 ```bash
 # under root dir
-conda activate voicestar
-python inference_commandline.py \
-  --reference_speech "./demo/5895_34622_000026_000002.wav" \
-  --target_text "I cannot believe that the same model can also do text to speech synthesis too! And you know what? this audio is 8 seconds long." \
+uv run inference_commandline.py `
+  --reference_speech "./demo/5895_34622_000026_000002.wav" `
+  --target_text "I cannot believe that the same model can also do text to speech synthesis too! And you know what? this audio is 8 seconds long." `
   --target_duration 8
 ```
 
 ### Gradio
 ```bash
-conda activate voicestar
-python inference_gradio.py
+uv run inference_gradio.py
 ```
-
 
 ## License
 Code license: MIT
 
 Model Weights License: CC-BY-4.0 (as Emilia dataset we used is under this license)
+
+This is a fork of https://github.com/jasonppy/VoiceStar
